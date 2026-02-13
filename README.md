@@ -30,6 +30,52 @@ Fetch multiple webpages concurrently. Returns results for each URL. Limited to 1
 | `timeout_ms` | number | No | Timeout per URL in ms (default: 30000) |
 | `html_fallback` | boolean | No | Fall back to HTML conversion (default: true) |
 
+## HTTP API
+
+The worker also exposes a direct JSON API at `https://mdrip.createmcp.dev/api` with CORS enabled.
+
+### `GET /api`
+
+Fetch one URL with query params:
+
+- `url` (required): target URL
+- `timeout` (optional): timeout in milliseconds
+- `html_fallback` (optional): `true`/`false` (set `false` to disable fallback)
+
+```bash
+curl "https://mdrip.createmcp.dev/api?url=https://example.com&timeout=30000&html_fallback=true"
+```
+
+### `POST /api`
+
+Single URL body:
+
+```json
+{
+  "url": "https://example.com",
+  "timeout_ms": 30000,
+  "html_fallback": true
+}
+```
+
+Batch body (1-10 URLs):
+
+```json
+{
+  "urls": [
+    "https://example.com",
+    "https://example.com/docs"
+  ],
+  "timeout_ms": 30000,
+  "html_fallback": true
+}
+```
+
+### Response shape
+
+- Single fetch: one JSON object with `url`, `resolvedUrl`, `status`, `contentType`, `source`, `markdownTokens`, `contentSignal`, and `markdown`
+- Batch fetch: `{ "results": [...] }`, where each result includes `success: true|false` and either fetch output or an `error`
+
 ## Development
 
 ```bash

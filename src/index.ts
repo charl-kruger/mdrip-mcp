@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { fetchMarkdown } from "mdrip";
-import type { FetchMarkdownOptions } from "mdrip";
+import type { FetchMarkdownOptions, MarkdownResponse } from "mdrip";
 
 export class MdripMCP extends McpAgent {
 	server = new McpServer({
@@ -152,6 +152,146 @@ export class MdripMCP extends McpAgent {
 	}
 }
 
+function jsonResponse(data: unknown, status = 200): Response {
+	return new Response(JSON.stringify(data, null, 2), {
+		status,
+		headers: {
+			"Content-Type": "application/json",
+			"Access-Control-Allow-Origin": "*",
+			"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+			"Access-Control-Allow-Headers": "Content-Type",
+		},
+	});
+}
+
+function formatResult(url: string, r: MarkdownResponse) {
+	return {
+		url,
+		resolvedUrl: r.resolvedUrl,
+		status: r.status,
+		contentType: r.contentType,
+		source: r.source,
+		markdownTokens: r.markdownTokens,
+		contentSignal: r.contentSignal,
+		markdown: r.markdown,
+	};
+}
+
+async function handleApiRequest(request: Request): Promise<Response> {
+	const url = new URL(request.url);
+
+	// CORS preflight
+	if (request.method === "OPTIONS") {
+		return new Response(null, {
+			status: 204,
+			headers: {
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+				"Access-Control-Allow-Headers": "Content-Type",
+			},
+		});
+	}
+
+	// GET /api?url=<target>&timeout=<ms>&html_fallback=<bool>
+	if (request.method === "GET") {
+		const targetUrl = url.searchParams.get("url");
+		if (!targetUrl) {
+			return jsonResponse({ error: "Missing required 'url' query parameter" }, 400);
+		}
+
+		try {
+			new URL(targetUrl);
+		} catch {
+			return jsonResponse({ error: "Invalid URL" }, 400);
+		}
+
+		const options: FetchMarkdownOptions = { userAgent: "mdrip-api/0.1.0" };
+		const timeout = url.searchParams.get("timeout");
+		if (timeout) options.timeoutMs = Number.parseInt(timeout, 10);
+		const fallback = url.searchParams.get("html_fallback");
+		if (fallback === "false") options.htmlFallback = false;
+
+		try {
+			const result = await fetchMarkdown(targetUrl, options);
+			return jsonResponse(formatResult(targetUrl, result));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return jsonResponse({ error: message, url: targetUrl }, 502);
+		}
+	}
+
+	// POST /api { url: "..." } or { urls: ["..."] }
+	if (request.method === "POST") {
+		let body: Record<string, unknown>;
+		try {
+			body = (await request.json()) as Record<string, unknown>;
+		} catch {
+			return jsonResponse({ error: "Invalid JSON body" }, 400);
+		}
+
+		const options: FetchMarkdownOptions = { userAgent: "mdrip-api/0.1.0" };
+		if (typeof body.timeout_ms === "number") options.timeoutMs = body.timeout_ms;
+		if (body.html_fallback === false) options.htmlFallback = false;
+
+		// Single URL
+		if (typeof body.url === "string") {
+			try {
+				new URL(body.url);
+			} catch {
+				return jsonResponse({ error: "Invalid URL" }, 400);
+			}
+
+			try {
+				const result = await fetchMarkdown(body.url, options);
+				return jsonResponse(formatResult(body.url, result));
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return jsonResponse({ error: message, url: body.url }, 502);
+			}
+		}
+
+		// Batch URLs
+		if (Array.isArray(body.urls)) {
+			const urls = body.urls as string[];
+			if (urls.length === 0 || urls.length > 10) {
+				return jsonResponse({ error: "urls must contain 1-10 URLs" }, 400);
+			}
+
+			for (const u of urls) {
+				try {
+					new URL(u);
+				} catch {
+					return jsonResponse({ error: `Invalid URL: ${u}` }, 400);
+				}
+			}
+
+			const settled = await Promise.allSettled(
+				urls.map((u) => fetchMarkdown(u, options)),
+			);
+
+			const results = settled.map((result, index) => {
+				if (result.status === "fulfilled") {
+					return { ...formatResult(urls[index], result.value), success: true };
+				}
+				return {
+					url: urls[index],
+					success: false,
+					error:
+						result.reason instanceof Error
+							? result.reason.message
+							: String(result.reason),
+				};
+			});
+
+			return jsonResponse({ results });
+		}
+
+		return jsonResponse({ error: "Body must contain 'url' (string) or 'urls' (array)" }, 400);
+	}
+
+	return jsonResponse({ error: "Method not allowed" }, 405);
+}
+
 export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
@@ -164,28 +304,25 @@ export default {
 			return MdripMCP.serve("/sse").fetch(request, env, ctx);
 		}
 
+		if (url.pathname === "/api" || url.pathname === "/api/") {
+			return handleApiRequest(request);
+		}
+
 		if (url.pathname === "/" || url.pathname === "") {
-			return new Response(
-				JSON.stringify(
-					{
-						name: "mdrip-mcp",
-						version: "0.1.0",
-						description:
-							"Remote MCP server for mdrip — fetch markdown snapshots of web pages optimized for AI agents",
-						endpoints: {
-							mcp: "/mcp",
-							sse: "/sse",
-						},
-						tools: ["fetch_markdown", "batch_fetch_markdown"],
-						npm: "https://www.npmjs.com/package/mdrip",
-					},
-					null,
-					2,
-				),
-				{
-					headers: { "Content-Type": "application/json" },
+			return jsonResponse({
+				name: "mdrip-mcp",
+				version: "0.1.0",
+				description:
+					"Remote MCP server and API for mdrip — fetch markdown snapshots of web pages optimized for AI agents",
+				endpoints: {
+					mcp: "/mcp",
+					sse: "/sse",
+					api: "/api",
 				},
-			);
+				tools: ["fetch_markdown", "batch_fetch_markdown"],
+				npm: "https://www.npmjs.com/package/mdrip",
+				docs: "https://github.com/charl-kruger/mdrip",
+			});
 		}
 
 		return new Response("Not found", { status: 404 });
