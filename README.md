@@ -1,51 +1,81 @@
-# Building a Remote MCP Server on Cloudflare (Without Auth)
+# mdrip-mcp
 
-This example allows you to deploy a remote MCP server that doesn't require authentication on Cloudflare Workers.
+A remote, authless MCP server that exposes [mdrip](https://www.npmjs.com/package/mdrip) — fetch markdown snapshots of web pages optimized for AI agents.
 
-## Get started:
+Built on Cloudflare Workers using the [Agents SDK](https://developers.cloudflare.com/agents/) and [Remote MCP Server](https://developers.cloudflare.com/agents/guides/remote-mcp-server/) pattern.
 
-[![Deploy to Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/ai/tree/main/demos/remote-mcp-authless)
+## Tools
 
-This will deploy your MCP server to a URL like: `remote-mcp-server-authless.<your-account>.workers.dev/sse`
+### `fetch_markdown`
 
-Alternatively, you can use the command line below to get the remote MCP Server created on your local machine:
+Fetch a single webpage and convert it to clean markdown using Cloudflare's Markdown for Agents. Returns markdown content with metadata (token count, source method, resolved URL, content signal).
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `url` | string (URL) | Yes | The webpage URL to fetch |
+| `timeout_ms` | number | No | Request timeout in ms (default: 30000) |
+| `html_fallback` | boolean | No | Fall back to HTML conversion if native markdown unavailable (default: true) |
+
+### `batch_fetch_markdown`
+
+Fetch multiple webpages concurrently. Returns results for each URL. Limited to 10 URLs per request.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `urls` | string[] | Yes | Array of URLs (1-10) |
+| `timeout_ms` | number | No | Timeout per URL in ms (default: 30000) |
+| `html_fallback` | boolean | No | Fall back to HTML conversion (default: true) |
+
+## Development
 
 ```bash
-npm create cloudflare@latest -- my-mcp-server --template=cloudflare/ai/demos/remote-mcp-authless
+pnpm install
+pnpm start
+# Server runs at http://localhost:8788
+# MCP endpoint at http://localhost:8788/mcp
 ```
 
-## Customizing your MCP Server
+### Test with MCP Inspector
 
-To add your own [tools](https://developers.cloudflare.com/agents/model-context-protocol/tools/) to the MCP server, define each tool inside the `init()` method of `src/index.ts` using `this.server.tool(...)`.
+```bash
+npx @modelcontextprotocol/inspector@latest
+# Open http://localhost:5173, enter http://localhost:8788/mcp
+```
 
-## Connect to Cloudflare AI Playground
+## Deploy
 
-You can connect to your MCP server from the Cloudflare AI Playground, which is a remote MCP client:
+```bash
+pnpm deploy
+# Deploys to https://mdrip-mcp.<your-account>.workers.dev
+```
 
-1. Go to https://playground.ai.cloudflare.com/
-2. Enter your deployed MCP server URL (`remote-mcp-server-authless.<your-account>.workers.dev/sse`)
-3. You can now use your MCP tools directly from the playground!
+## Connect
 
-## Connect Claude Desktop to your MCP server
+### Claude Desktop
 
-You can also connect to your remote MCP server from local MCP clients, by using the [mcp-remote proxy](https://www.npmjs.com/package/mcp-remote).
-
-To connect to your MCP server from Claude Desktop, follow [Anthropic's Quickstart](https://modelcontextprotocol.io/quickstart/user) and within Claude Desktop go to Settings > Developer > Edit Config.
-
-Update with this configuration:
+Add to `claude_desktop_config.json`:
 
 ```json
 {
-	"mcpServers": {
-		"calculator": {
-			"command": "npx",
-			"args": [
-				"mcp-remote",
-				"http://localhost:8787/sse" // or remote-mcp-server-authless.your-account.workers.dev/sse
-			]
-		}
-	}
+  "mcpServers": {
+    "mdrip": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mdrip-mcp.<your-account>.workers.dev/mcp"]
+    }
+  }
 }
 ```
 
-Restart Claude and you should see the tools become available.
+### Claude Code
+
+```bash
+claude mcp add mdrip-remote --transport sse https://mdrip-mcp.<your-account>.workers.dev/sse
+```
+
+### Cloudflare AI Playground
+
+Enter your deployed URL (`mdrip-mcp.<your-account>.workers.dev/sse`) at [playground.ai.cloudflare.com](https://playground.ai.cloudflare.com/).
