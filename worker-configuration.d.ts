@@ -3,6 +3,9 @@
 declare namespace Cloudflare {
 	interface Env {
 		MCP_OBJECT: DurableObjectNamespace<import("./src/index").MdripMCP>;
+		MCP_TRANSPORT_RATE_LIMITER: RateLimit;
+		API_RATE_LIMITER: RateLimit;
+		BATCH_API_RATE_LIMITER: RateLimit;
 	}
 }
 interface Env extends Cloudflare.Env {}

@@ -76,6 +76,19 @@ Batch body (1-10 URLs):
 - Single fetch: one JSON object with `url`, `resolvedUrl`, `status`, `contentType`, `source`, `markdownTokens`, `contentSignal`, and `markdown`
 - Batch fetch: `{ "results": [...] }`, where each result includes `success: true|false` and either fetch output or an `error`
 
+## Rate Limits
+
+This worker uses Cloudflare Workers Rate Limiting bindings with per-location limits:
+
+- MCP transports (`/mcp`, `/sse`): `300` requests / `60s`
+- API (`/api`): `120` requests / `60s`
+- Batch API (`POST /api` with `urls`): additional `30` requests / `60s`
+
+Rate limit responses return HTTP `429` with `Retry-After: 60`.
+
+For better client isolation, callers can provide `x-ratelimit-key: <stable-client-id>`.
+If omitted, the worker falls back to authorization header, then IP/user-agent heuristics.
+
 ## Development
 
 ```bash

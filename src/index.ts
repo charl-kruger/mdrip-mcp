@@ -4,10 +4,15 @@ import { z } from "zod";
 import { fetchMarkdown } from "mdrip";
 import type { FetchMarkdownOptions, MarkdownResponse } from "mdrip";
 
+const MCP_VERSION = "0.1.1";
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+
+type RateLimitScope = "mcp" | "api" | "api-batch";
+
 export class MdripMCP extends McpAgent {
 	server = new McpServer({
 		name: "mdrip",
-		version: "0.1.0",
+		version: MCP_VERSION,
 	});
 
 	async init() {
@@ -34,10 +39,10 @@ export class MdripMCP extends McpAgent {
 					),
 			},
 			async ({ url, timeout_ms, html_fallback }) => {
-				try {
-					const options: FetchMarkdownOptions = {
-						userAgent: "mdrip-mcp/0.1.0",
-					};
+					try {
+						const options: FetchMarkdownOptions = {
+							userAgent: `mdrip-mcp/${MCP_VERSION}`,
+						};
 					if (timeout_ms !== undefined) options.timeoutMs = timeout_ms;
 					if (html_fallback !== undefined) options.htmlFallback = html_fallback;
 
@@ -101,10 +106,10 @@ export class MdripMCP extends McpAgent {
 						"Fall back to HTML-to-markdown conversion if native markdown is unavailable (default: true)",
 					),
 			},
-			async ({ urls, timeout_ms, html_fallback }) => {
-				const options: FetchMarkdownOptions = {
-					userAgent: "mdrip-mcp/0.1.0",
-				};
+				async ({ urls, timeout_ms, html_fallback }) => {
+					const options: FetchMarkdownOptions = {
+						userAgent: `mdrip-mcp/${MCP_VERSION}`,
+					};
 				if (timeout_ms !== undefined) options.timeoutMs = timeout_ms;
 				if (html_fallback !== undefined) options.htmlFallback = html_fallback;
 
@@ -152,7 +157,11 @@ export class MdripMCP extends McpAgent {
 	}
 }
 
-function jsonResponse(data: unknown, status = 200): Response {
+function jsonResponse(
+	data: unknown,
+	status = 200,
+	extraHeaders: HeadersInit = {},
+): Response {
 	return new Response(JSON.stringify(data, null, 2), {
 		status,
 		headers: {
@@ -160,8 +169,58 @@ function jsonResponse(data: unknown, status = 200): Response {
 			"Access-Control-Allow-Origin": "*",
 			"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 			"Access-Control-Allow-Headers": "Content-Type",
+			...extraHeaders,
 		},
 	});
+}
+
+function getRateLimitActor(request: Request): string {
+	// Prefer explicit, stable caller identity if provided by integrators.
+	const explicitKey = request.headers.get("x-ratelimit-key");
+	if (explicitKey && explicitKey.trim()) {
+		return `key:${explicitKey.trim().slice(0, 128)}`;
+	}
+
+	const auth = request.headers.get("authorization");
+	if (auth && auth.trim()) {
+		return `auth:${auth.trim().slice(0, 128)}`;
+	}
+
+	// Fallback for authless traffic.
+	const ip = request.headers.get("cf-connecting-ip");
+	if (ip) {
+		return `ip:${ip}`;
+	}
+
+	const ua = request.headers.get("user-agent");
+	if (ua && ua.trim()) {
+		return `ua:${ua.trim().slice(0, 128)}`;
+	}
+
+	return "anonymous";
+}
+
+async function applyRateLimit(
+	request: Request,
+	limiter: RateLimit,
+	scope: RateLimitScope,
+): Promise<Response | null> {
+	const key = `${scope}:${getRateLimitActor(request)}`;
+	const { success } = await limiter.limit({ key });
+
+	if (success) {
+		return null;
+	}
+
+	return jsonResponse(
+		{
+			error: "Rate limit exceeded",
+			scope,
+			retryAfterSeconds: RATE_LIMIT_WINDOW_SECONDS,
+		},
+		429,
+		{ "Retry-After": String(RATE_LIMIT_WINDOW_SECONDS) },
+	);
 }
 
 function formatResult(url: string, r: MarkdownResponse) {
@@ -177,7 +236,7 @@ function formatResult(url: string, r: MarkdownResponse) {
 	};
 }
 
-async function handleApiRequest(request: Request): Promise<Response> {
+async function handleApiRequest(request: Request, env: Env): Promise<Response> {
 	const url = new URL(request.url);
 
 	// CORS preflight
@@ -190,6 +249,15 @@ async function handleApiRequest(request: Request): Promise<Response> {
 				"Access-Control-Allow-Headers": "Content-Type",
 			},
 		});
+	}
+
+	const apiRateLimited = await applyRateLimit(
+		request,
+		env.API_RATE_LIMITER,
+		"api",
+	);
+	if (apiRateLimited) {
+		return apiRateLimited;
 	}
 
 	// GET /api?url=<target>&timeout=<ms>&html_fallback=<bool>
@@ -205,7 +273,9 @@ async function handleApiRequest(request: Request): Promise<Response> {
 			return jsonResponse({ error: "Invalid URL" }, 400);
 		}
 
-		const options: FetchMarkdownOptions = { userAgent: "mdrip-api/0.1.0" };
+			const options: FetchMarkdownOptions = {
+				userAgent: `mdrip-api/${MCP_VERSION}`,
+			};
 		const timeout = url.searchParams.get("timeout");
 		if (timeout) options.timeoutMs = Number.parseInt(timeout, 10);
 		const fallback = url.searchParams.get("html_fallback");
@@ -229,7 +299,9 @@ async function handleApiRequest(request: Request): Promise<Response> {
 			return jsonResponse({ error: "Invalid JSON body" }, 400);
 		}
 
-		const options: FetchMarkdownOptions = { userAgent: "mdrip-api/0.1.0" };
+		const options: FetchMarkdownOptions = {
+			userAgent: `mdrip-api/${MCP_VERSION}`,
+		};
 		if (typeof body.timeout_ms === "number") options.timeoutMs = body.timeout_ms;
 		if (body.html_fallback === false) options.htmlFallback = false;
 
@@ -252,6 +324,15 @@ async function handleApiRequest(request: Request): Promise<Response> {
 
 		// Batch URLs
 		if (Array.isArray(body.urls)) {
+			const batchRateLimited = await applyRateLimit(
+				request,
+				env.BATCH_API_RATE_LIMITER,
+				"api-batch",
+			);
+			if (batchRateLimited) {
+				return batchRateLimited;
+			}
+
 			const urls = body.urls as string[];
 			if (urls.length === 0 || urls.length > 10) {
 				return jsonResponse({ error: "urls must contain 1-10 URLs" }, 400);
@@ -293,25 +374,43 @@ async function handleApiRequest(request: Request): Promise<Response> {
 }
 
 export default {
-	fetch(request: Request, env: Env, ctx: ExecutionContext) {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		const url = new URL(request.url);
 
 		if (url.pathname === "/mcp" || url.pathname === "/mcp/") {
+			const mcpRateLimited = await applyRateLimit(
+				request,
+				env.MCP_TRANSPORT_RATE_LIMITER,
+				"mcp",
+			);
+			if (mcpRateLimited) {
+				return mcpRateLimited;
+			}
+
 			return MdripMCP.serve("/mcp").fetch(request, env, ctx);
 		}
 
 		if (url.pathname === "/sse" || url.pathname === "/sse/") {
+			const sseRateLimited = await applyRateLimit(
+				request,
+				env.MCP_TRANSPORT_RATE_LIMITER,
+				"mcp",
+			);
+			if (sseRateLimited) {
+				return sseRateLimited;
+			}
+
 			return MdripMCP.serve("/sse").fetch(request, env, ctx);
 		}
 
 		if (url.pathname === "/api" || url.pathname === "/api/") {
-			return handleApiRequest(request);
+			return handleApiRequest(request, env);
 		}
 
 		if (url.pathname === "/" || url.pathname === "") {
-			return jsonResponse({
-				name: "mdrip-mcp",
-				version: "0.1.0",
+				return jsonResponse({
+					name: "mdrip-mcp",
+					version: MCP_VERSION,
 				description:
 					"Remote MCP server and API for mdrip — fetch markdown snapshots of web pages optimized for AI agents",
 				endpoints: {
