@@ -50,7 +50,7 @@ npx @modelcontextprotocol/inspector@latest
 
 ```bash
 pnpm deploy
-# Deploys to https://mdrip-mcp.<your-account>.workers.dev
+# Deploys to https://mdrip.createmcp.dev
 ```
 
 ## Connect
@@ -64,7 +64,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "mdrip": {
       "command": "npx",
-      "args": ["mcp-remote", "https://mdrip-mcp.<your-account>.workers.dev/mcp"]
+      "args": ["mcp-remote", "https://mdrip.createmcp.dev/mcp"]
     }
   }
 }
@@ -73,9 +73,9 @@ Add to `claude_desktop_config.json`:
 ### Claude Code
 
 ```bash
-claude mcp add mdrip-remote --transport sse https://mdrip-mcp.<your-account>.workers.dev/sse
+claude mcp add mdrip-remote --transport sse https://mdrip.createmcp.dev/sse
 ```
 
 ### Cloudflare AI Playground
 
-Enter your deployed URL (`mdrip-mcp.<your-account>.workers.dev/sse`) at [playground.ai.cloudflare.com](https://playground.ai.cloudflare.com/).
+Enter `mdrip.createmcp.dev/sse` at [playground.ai.cloudflare.com](https://playground.ai.cloudflare.com/).
